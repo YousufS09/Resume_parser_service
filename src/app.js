@@ -7,7 +7,14 @@ const parseRoutes = require('./routes/parseRoutes');
 const app = express();
 
 // Middlewares
-app.use(cors());
+const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:5173';
+app.use(
+  cors({
+    origin: allowedOrigin,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
