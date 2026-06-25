@@ -14,11 +14,18 @@ describe('Parse Controller', () => {
         };
 
         parseService.extractResumeData.mockResolvedValue(mockResumeData);
+        parseService.parseAndSaveResume.mockResolvedValue({
+            id: 'resume-1',
+            data: mockResumeData
+        });
 
         const req = {
             file: {
                 path: 'uploads/sample.pdf',
-                mimetype: 'application/pdf'
+                mimetype: 'application/pdf',
+                originalname: 'sample.pdf',
+                filename: 'resume-sample.pdf',
+                size: 123
             }
         };
 
@@ -35,7 +42,11 @@ describe('Parse Controller', () => {
 
         expect(res.json).toHaveBeenCalledWith({
             message: 'Resume parsed successfully',
-            data: mockResumeData
+            data: mockResumeData,
+            resume: {
+                id: 'resume-1',
+                data: mockResumeData
+            }
         });
 
     });
