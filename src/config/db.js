@@ -1,5 +1,9 @@
 const { Pool } = require('pg');
 
+const shouldUseSsl =
+  process.env.DB_SSL === 'true' ||
+  (process.env.NODE_ENV === 'production' && process.env.DB_SSL !== 'false');
+
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
@@ -7,6 +11,7 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
   options: '-c search_path=resume_parser,public',
+  ssl: shouldUseSsl ? { rejectUnauthorized: false } : false,
 });
 
 pool.on('error', (err, client) => {
