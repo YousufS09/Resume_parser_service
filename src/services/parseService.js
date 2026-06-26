@@ -4,25 +4,6 @@ const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
 const { pool } = require("../config/db");
 
-const extractTextFromResume = async (filePath, mimeType) => {
-    if (mimeType === "application/pdf") {
-        const buffer = fs.readFileSync(filePath);
-        const pdfData = await pdfParse(buffer);
-        return pdfData.text;
-    }
-
-    if (
-        mimeType ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) {
-        const result = await mammoth.extractRawText({
-            path: filePath,
-        });
-        return result.value;
-    }
-    throw new Error("Unsupported file type");
-};
-
 const uploadedResumes = new Map();
 const parsedResumes = new Map();
 
@@ -322,6 +303,189 @@ const buildParsedDataFromText = (text, filePath = '') => {
     certifications: parseCertifications(sections.certifications || []),
     confidenceScore: 0.75,
   };
+};
+
+const extractJsonObject = (value) => {
+  const content = String(value || '').trim();
+  const fencedMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fencedMatch ? fencedMatch[1].trim() : content;
+
+  try {
+    return JSON.parse(candidate);
+  } catch (error) {
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+
+    if (start >= 0 && end > start) {
+      return JSON.parse(candidate.slice(start, end + 1));
+    }
+
+    throw error;
+  }
+};
+
+const sanitizeParsedResume = (parsedData, fallbackData) => {
+  const parsedPersonalInfo = parsedData?.personalInfo || parsedData?.personal_info || {};
+  const fallbackPersonalInfo = fallbackData?.personalInfo || {};
+
+  const personalInfo = {
+    name: toText(parsedPersonalInfo.name || parsedPersonalInfo.fullName || parsedPersonalInfo.full_name) || fallbackPersonalInfo.name,
+    email: toText(parsedPersonalInfo.email) || fallbackPersonalInfo.email,
+    phone: toText(parsedPersonalInfo.phone || parsedPersonalInfo.phoneNumber || parsedPersonalInfo.phone_number) || fallbackPersonalInfo.phone,
+    linkedin:
+      toText(parsedPersonalInfo.linkedin || parsedPersonalInfo.linkedinUrl || parsedPersonalInfo.linkedin_url) ||
+      fallbackPersonalInfo.linkedin,
+    github:
+      toText(parsedPersonalInfo.github || parsedPersonalInfo.githubUrl || parsedPersonalInfo.github_url) ||
+      fallbackPersonalInfo.github,
+    portfolio:
+      toText(parsedPersonalInfo.portfolio || parsedPersonalInfo.portfolioUrl || parsedPersonalInfo.portfolio_url) ||
+      fallbackPersonalInfo.portfolio,
+    location:
+      toText(parsedPersonalInfo.location || parsedPersonalInfo.currentLocation || parsedPersonalInfo.current_location) ||
+      fallbackPersonalInfo.location,
+    summary: toText(parsedPersonalInfo.summary) || fallbackPersonalInfo.summary,
+  };
+
+  return {
+    personalInfo,
+    skills: normalizeStringArray(parsedData?.skills).length > 0 ? normalizeStringArray(parsedData.skills) : fallbackData.skills,
+    experience:
+      normalizeObjectArray(parsedData?.experience).length > 0
+        ? normalizeObjectArray(parsedData.experience)
+        : fallbackData.experience,
+    education:
+      normalizeObjectArray(parsedData?.education).length > 0
+        ? normalizeObjectArray(parsedData.education)
+        : fallbackData.education,
+    projects:
+      normalizeObjectArray(parsedData?.projects).length > 0
+        ? normalizeObjectArray(parsedData.projects)
+        : fallbackData.projects,
+    certifications:
+      normalizeObjectArray(parsedData?.certifications).length > 0
+        ? normalizeObjectArray(parsedData.certifications)
+        : fallbackData.certifications,
+    confidenceScore: toDecimal(parsedData?.confidenceScore ?? parsedData?.confidence_score) ?? 0.9,
+    jobId: toInt(parsedData?.jobId ?? parsedData?.job_id),
+  };
+};
+
+const buildGroqPrompt = (plainText) => `
+Extract structured resume data from the resume text below.
+
+Return only valid JSON with this exact shape:
+{
+  "personalInfo": {
+    "name": string | null,
+    "email": string | null,
+    "phone": string | null,
+    "linkedin": string | null,
+    "github": string | null,
+    "portfolio": string | null,
+    "location": string | null,
+    "summary": string | null
+  },
+  "skills": string[],
+  "experience": [
+    {
+      "company_name": string | null,
+      "job_title": string | null,
+      "employment_type": string | null,
+      "start_date": "YYYY-MM-DD" | null,
+      "end_date": "YYYY-MM-DD" | null,
+      "currently_working": boolean,
+      "description": string | null
+    }
+  ],
+  "education": [
+    {
+      "institution_name": string | null,
+      "degree": string | null,
+      "specialization": string | null,
+      "start_year": number | null,
+      "end_year": number | null,
+      "cgpa": number | null
+    }
+  ],
+  "projects": [
+    {
+      "project_name": string | null,
+      "project_description": string | null,
+      "technologies_used": string | null,
+      "github_link": string | null,
+      "project_link": string | null
+    }
+  ],
+  "certifications": [
+    {
+      "certification_name": string | null,
+      "issuing_organization": string | null,
+      "issue_date": "YYYY-MM-DD" | null,
+      "expiry_date": "YYYY-MM-DD" | null,
+      "credential_id": string | null
+    }
+  ],
+  "confidenceScore": number
+}
+
+Rules:
+- Extract the email from the resume text exactly when present.
+- Use null for unknown scalar values and [] for unknown lists.
+- Do not invent companies, schools, dates, links, or email addresses.
+- Keep confidenceScore between 0 and 1.
+
+Resume text:
+${plainText.slice(0, Number(process.env.GROQ_MAX_RESUME_CHARS || 30000))}
+`;
+
+const parseResumeWithGroq = async (plainText) => {
+  const apiKey = process.env.GROQ_API_KEY;
+
+  if (!apiKey) {
+    throw new Error('GROQ_API_KEY is not configured');
+  }
+
+  const response = await fetch(process.env.GROQ_API_URL || 'https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are a careful resume parser. Return only valid JSON matching the requested schema.',
+        },
+        {
+          role: 'user',
+          content: buildGroqPrompt(plainText),
+        },
+      ],
+    }),
+  });
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    const error = new Error(`Groq API request failed with status ${response.status}: ${responseText}`);
+    error.status = response.status;
+    throw error;
+  }
+
+  const payload = extractJsonObject(responseText);
+  const messageContent = payload?.choices?.[0]?.message?.content;
+
+  if (!messageContent) {
+    throw new Error('Groq API response did not include parsed resume content');
+  }
+
+  return extractJsonObject(messageContent);
 };
 
 const normalizeStringArray = (value) => {
@@ -772,7 +936,22 @@ exports.extractResumeData = async (filePath, mimeType) => {
       throw new Error('No text could be extracted from the file');
     }
 
-    return buildParsedDataFromText(plainText, filePath);
+    const ruleBasedData = buildParsedDataFromText(plainText, filePath);
+
+    if (!process.env.GROQ_API_KEY) {
+      console.warn('GROQ_API_KEY is not configured; using rule-based resume parser.');
+      return ruleBasedData;
+    }
+
+    try {
+      const groqParsedData = await parseResumeWithGroq(plainText);
+      console.log('Resume parsed with Groq LLM.');
+      return sanitizeParsedResume(groqParsedData, ruleBasedData);
+    } catch (error) {
+      const limitHint = [402, 429].includes(error.status) ? ' Groq API limit/quota may be reached.' : '';
+      console.warn(`Groq resume parsing failed.${limitHint} Falling back to rule-based parser: ${error.message}`);
+      return ruleBasedData;
+    }
   } catch (error) {
     console.warn('Primary resume extraction failed, falling back to filename-based parsing:', error.message);
 
