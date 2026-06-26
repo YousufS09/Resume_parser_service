@@ -1,12 +1,27 @@
-/**
- * Service to handle parsing and database persistence for resumes.
- */
+const fs = require("fs/promises");
+const path = require("path");
+const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth");
+const { pool } = require("../config/db");
 
-const fs = require('fs/promises');
-const path = require('path');
-const { pool } = require('../config/db');
-const pdfParse = require('pdf-parse');
-const mammoth = require('mammoth');
+const extractTextFromResume = async (filePath, mimeType) => {
+    if (mimeType === "application/pdf") {
+        const buffer = fs.readFileSync(filePath);
+        const pdfData = await pdfParse(buffer);
+        return pdfData.text;
+    }
+
+    if (
+        mimeType ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) {
+        const result = await mammoth.extractRawText({
+            path: filePath,
+        });
+        return result.value;
+    }
+    throw new Error("Unsupported file type");
+};
 
 const uploadedResumes = new Map();
 const parsedResumes = new Map();
@@ -384,6 +399,16 @@ const insertCandidate = async (client, payload) => {
       updated_at
     )
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+    ON CONFLICT (email)
+    DO UPDATE SET
+      full_name = EXCLUDED.full_name,
+      phone_number = EXCLUDED.phone_number,
+      linkedin_url = EXCLUDED.linkedin_url,
+      github_url = EXCLUDED.github_url,
+      portfolio_url = EXCLUDED.portfolio_url,
+      current_location = EXCLUDED.current_location,
+      summary = EXCLUDED.summary,
+      updated_at = NOW()
     RETURNING *
   `;
 
@@ -399,6 +424,14 @@ const insertCandidate = async (client, payload) => {
   ]);
 
   return result.rows[0];
+};
+
+const clearCandidateParsedDetails = async (client, candidateId) => {
+  await client.query('DELETE FROM candidate_skill WHERE candidate_id = $1', [candidateId]);
+  await client.query('DELETE FROM education WHERE candidate_id = $1', [candidateId]);
+  await client.query('DELETE FROM experience WHERE candidate_id = $1', [candidateId]);
+  await client.query('DELETE FROM project WHERE candidate_id = $1', [candidateId]);
+  await client.query('DELETE FROM certification WHERE candidate_id = $1', [candidateId]);
 };
 
 const insertResume = async (client, candidateId, file) => {
@@ -749,8 +782,6 @@ exports.extractResumeData = async (filePath, mimeType) => {
 };
 
 exports.saveUploadedResume = async (file) => {
-  const uploadedAt = nowIso();
-
   const resume = await withDbTransaction(async (client) => {
     const insertedResume = await insertResume(client, null, file);
 
@@ -764,20 +795,6 @@ exports.saveUploadedResume = async (file) => {
       uploadedAt: insertedResume.uploaded_at,
       candidateId: insertedResume.candidate_id,
     };
-  }).catch((error) => {
-    console.warn('Falling back to in-memory resume storage because database insert failed:', error.message);
-    const fallbackResume = {
-      id: createId(),
-      originalName: file.originalname,
-      filename: file.filename,
-      path: file.path,
-      mimeType: file.mimetype,
-      size: file.size,
-      uploadedAt,
-      candidateId: null,
-    };
-    uploadedResumes.set(String(fallbackResume.id), fallbackResume);
-    return fallbackResume;
   });
 
   uploadedResumes.set(String(resume.id), resume);
@@ -790,6 +807,7 @@ const persistParsedResume = async (uploadedResume, parsedData) => {
   return withDbTransaction(async (client) => {
     const parserJob = await insertParserJob(client, 'processing');
     const candidateRow = await insertCandidate(client, parsedPayload);
+    await clearCandidateParsedDetails(client, candidateRow.candidate_id);
 
     const resumeRow = await client.query(
       `
@@ -916,32 +934,7 @@ exports.parseUploadedResume = async (id) => {
   }
 
   const parsedData = await exports.extractResumeData(uploadedResume.path, uploadedResume.mimeType);
-  try {
-    return await persistParsedResume(uploadedResume, parsedData);
-  } catch (error) {
-    console.warn('Falling back to in-memory parsed resume storage because database write failed:', error.message);
-
-    const fallbackParsedResume = {
-      id: uploadedResume.id,
-      originalName: uploadedResume.originalName,
-      filename: uploadedResume.filename,
-      path: uploadedResume.path,
-      mimeType: uploadedResume.mimeType,
-      size: uploadedResume.size,
-      uploadedAt: uploadedResume.uploadedAt,
-      parsedAt: nowIso(),
-      candidateId: uploadedResume.candidateId || null,
-      data: parsedData,
-    };
-
-    parsedResumes.set(String(fallbackParsedResume.id), fallbackParsedResume);
-    uploadedResumes.set(String(uploadedResume.id), {
-      ...uploadedResume,
-      candidateId: uploadedResume.candidateId || null,
-    });
-
-    return fallbackParsedResume;
-  }
+  return persistParsedResume(uploadedResume, parsedData);
 };
 
 exports.parseAndSaveResume = async (file) => {

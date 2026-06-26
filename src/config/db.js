@@ -4,12 +4,18 @@ const shouldUseSsl =
   process.env.DB_SSL === 'true' ||
   (process.env.NODE_ENV === 'production' && process.env.DB_SSL !== 'false');
 
+const connectionString = process.env.DB_URL || process.env.DATABASE_URL;
+
 const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
+  ...(connectionString
+    ? { connectionString }
+    : {
+        user: process.env.DB_USER,
+        host: process.env.DB_HOST,
+        database: process.env.DB_NAME,
+        password: process.env.DB_PASSWORD,
+        port: process.env.DB_PORT,
+      }),
   options: '-c search_path=resume_parser,public',
   ssl: shouldUseSsl ? { rejectUnauthorized: false } : false,
 });
@@ -22,7 +28,8 @@ pool.on('error', (err, client) => {
 const connectDB = async () => {
   try {
     const client = await pool.connect();
-    console.log(`Successfully connected to PostgreSQL database: ${process.env.DB_NAME}`);
+    const databaseName = client.database || process.env.DB_NAME || 'configured database';
+    console.log(`Successfully connected to PostgreSQL database: ${databaseName}`);
     client.release();
   } catch (err) {
     console.error('Failed to connect to the database:', err.message);
