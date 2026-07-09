@@ -19,5 +19,5 @@ services:
         sync: false
       - key: DB_PASSWORD
         sync: false
-      - key: ALLOWED_ORIGIN
-        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://resumeintelligenceplatform-frontend.netlify.app,https://deluxe-mermaid-dc9dad.netlify.app
