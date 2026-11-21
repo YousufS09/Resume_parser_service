@@ -1,10 +1,14 @@
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
 require('dotenv').config();
 
 const parseRoutes = require('./routes/parseRoutes');
 
 const app = express();
+
+// Render and similar hosts sit behind one proxy; trust it so req.ip is the real client IP (rate limiting).
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 
 // Middlewares
 const defaultAllowedOrigins = [
@@ -50,7 +54,9 @@ app.use(
         return;
       }
 
-      callback(new Error(`CORS blocked origin: ${origin}`));
+      const error = new Error(`CORS blocked origin: ${origin}`);
+      error.status = 403;
+      callback(error);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -69,10 +75,27 @@ app.get('/health', (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status || 500).json({
+  let status = err.status || 500;
+  let message = err.message || 'Internal Server Error';
+
+  // Upload errors (file too large, unexpected field, ...) are client errors, not server failures
+  if (err instanceof multer.MulterError) {
+    status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    message = err.code === 'LIMIT_FILE_SIZE' ? 'File is too large. The maximum size is 5 MB.' : err.message;
+  }
+
+  if (status >= 500) {
+    console.error(err.stack);
+
+    // Do not leak database or internal error details to clients in production
+    if (process.env.NODE_ENV === 'production') {
+      message = 'Internal Server Error';
+    }
+  }
+
+  res.status(status).json({
     error: {
-      message: err.message || 'Internal Server Error',
+      message,
     },
   });
 });

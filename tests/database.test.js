@@ -1,9 +1,9 @@
-require('dotenv').config();
+const { pool, isTestDatabaseConfigured } = require('../src/config/db');
 
-const { pool } =
-    require('../src/config/db');
+// Needs a dedicated test database: set TEST_DB_URL (see README). Skipped otherwise.
+const describeDb = isTestDatabaseConfigured ? describe : describe.skip;
 
-describe('Database Connection', () => {
+describeDb('Database Connection', () => {
 
     afterAll(async () => {
         await pool.end();

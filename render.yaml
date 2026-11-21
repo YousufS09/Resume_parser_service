@@ -2,13 +2,16 @@ services:
   - type: web
     name: resume-parser-service
     runtime: node
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 3000
+      # Preferred: a full connection string. When set, DB_HOST/DB_USER/... below are ignored.
+      - key: DB_URL
+        sync: false
       - key: DB_HOST
         sync: false
       - key: DB_PORT
@@ -19,5 +22,8 @@ services:
         sync: false
       - key: DB_PASSWORD
         sync: false
+      # Without this key the service uses only the rule-based parser.
+      - key: GROQ_API_KEY
+        sync: false
       - key: ALLOWED_ORIGINS
-        value: https://resumeintelligenceplatform-frontend.netlify.app,https://deluxe-mermaid-dc9dad.netlify.app
+        value: https://resumeintelligenceplatform-frontend.netlify.app,https://deluxe-mermaid-dc9dad.netlify.app,https://eclectic-quokka-cda4c7.netlify.app

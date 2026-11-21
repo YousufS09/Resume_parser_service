@@ -10,9 +10,27 @@ on:
       - main
 
 jobs:
-  build:
+  test:
 
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci_user
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: resume_parser_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_user"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DB_URL: postgresql://ci_user:ci_password@localhost:5432/resume_parser_test
 
     steps:
 
@@ -23,11 +41,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Install Dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Verify Project Structure
-        run: |
-          ls
-          ls src
+      - name: Create Database Schema
+        run: psql "$TEST_DB_URL" -v ON_ERROR_STOP=1 -f db/schema.sql
+
+      - name: Run Tests
+        run: npm test
